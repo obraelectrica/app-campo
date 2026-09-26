@@ -1,0 +1,79 @@
+name: Construir APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Instalar dependencias
+        run: npm install --no-audit --no-fund
+
+      - name: Preparar proyecto Android
+        run: |
+          rm -rf android
+          npx cap add android
+          node scripts/preparar-android.js
+          npx cap sync android
+          echo "VERSION=$(node -p "require('./package.json').version")" >> $GITHUB_ENV
+
+      - name: Llave de firma
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > android/app/llave.jks
+            echo "FIRMA=release" >> $GITHUB_ENV
+          else
+            echo "::warning::Falta el secreto KEYSTORE_B64: se compila una versión de prueba."
+            echo "FIRMA=debug" >> $GITHUB_ENV
+          fi
+
+      - name: Compilar APK
+        working-directory: android
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          if [ "$FIRMA" = "release" ]; then
+            ./gradlew assembleRelease --no-daemon
+            cp app/build/outputs/apk/release/app-release.apk ../obra-electrica.apk
+          else
+            ./gradlew assembleDebug --no-daemon
+            cp app/build/outputs/apk/debug/app-debug.apk ../obra-electrica.apk
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obra-electrica-apk
+          path: obra-electrica.apk
+
+      - name: Publicar para descargar
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}-${{ github.run_number }}
+          name: App de campo ${{ env.VERSION }} (compilación ${{ github.run_number }})
+          body: |
+            Descarga **obra-electrica.apk** desde el celular e instálala.
+            Firma: ${{ env.FIRMA }}
+          files: obra-electrica.apk
+          make_latest: true
